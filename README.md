@@ -29,7 +29,11 @@ import { verificarServicio, ServicioIndeterminado }
 import { almacenSupabase }
   from "https://raw.githubusercontent.com/V8Labs/v8-auth-service/<SHA>/almacen_supabase.ts";
 
-const almacen = almacenSupabase(serviceRoleClient, { rpcUso: "service_token_marcar_uso" });
+const almacen = almacenSupabase(serviceRoleClient);
+// ⚠ NO se pasa `rpcUso`: `mirror` metió el marcado de uso ADENTRO de
+// `verificar_token`, con tope de 1 escritura/minuto. Su razón es buena: si marcar
+// el uso es una llamada aparte, alguien la va a olvidar y `ultimo_uso` va a mentir
+// por omisión — y un campo que miente por omisión es peor que no tenerlo.
 
 try {
   const svc = await verificarServicio(req, "contactos:escribir", almacen);

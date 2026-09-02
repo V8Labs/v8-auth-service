@@ -46,7 +46,11 @@ export type OpcionesAlmacen = {
   /** Envoltorio en schema EXPUESTO que llama a `v8_auth.verificar_token`.
    *  Devuelve el nombre del agente, o `null` si el token no vale o no alcanza. */
   rpcVerificar?: string;
-  /** RPC que estampa `ultimo_uso`. Si no existe, no se marca y no pasa nada. */
+  /** RPC aparte para `ultimo_uso`. **Normalmente NO se pasa.**
+   *  `mirror` lo metió adentro de `verificar_token` (tope 1 escritura/min), y su
+   *  razón es buena: una llamada separada alguien la olvida, y `ultimo_uso` pasa a
+   *  mentir por omisión — peor que no tenerlo. Queda solo para almacenes que no
+   *  puedan marcarlo por dentro. */
   rpcUso?: string;
   /** Solo para el camino de respaldo `buscar`. */
   tabla?: string;
