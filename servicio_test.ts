@@ -261,3 +261,9 @@ Deno.test("la corrida NO altera la autorización (es procedencia, no permiso)", 
   });
   assertEquals((await verificarServicio(req, SCOPE, alm)).estado, "rechazado");
 });
+
+Deno.test("⭐ acunar emite un id UUID — la tabla lo exige y rechazaría cualquier otro", async () => {
+  const t = await acunar("whatsapp", ["contactos:escribir"]);
+  assert(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t.id), `no es uuid: ${t.id}`);
+  assert(t.token.startsWith(`v8svc_${t.id}_`));
+});

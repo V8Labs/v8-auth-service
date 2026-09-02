@@ -307,7 +307,6 @@ export async function verificarServicio(
 export async function acunar(
   agente: string,
   scopes: string[],
-  idLargo = 12,
   secretoLargo = 32,
 ): Promise<{ id: string; secreto: string; token: string; hash: string; agente: string; scopes: string[] }> {
   const alfabeto = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -316,7 +315,12 @@ export async function acunar(
     crypto.getRandomValues(bytes);
     return Array.from(bytes).map((b) => alfabeto[b % alfabeto.length]).join("");
   };
-  const id = azar(idLargo);
+  // ⚠ El id es un **UUID**, no una cadena alfanumérica.
+  // `mirror` hizo la columna `uuid` al aplicar la tabla, así que un id alfanumérico
+  // sería rechazado por la base al insertar. Mi primera versión acuñaba ids que mi
+  // propia tabla no aceptaba — el acuñador y el verificador tienen que hablar del
+  // mismo formato o el mecanismo no cierra por ningún lado.
+  const id = crypto.randomUUID();
   const secreto = azar(secretoLargo);
   return {
     id,
