@@ -144,4 +144,15 @@ no paga la superficie. Misma regla que `v8-auth-jwt`.
 
 | versión | SHA | notas |
 |---|---|---|
-| `1.0.0` | _(se completa al publicar)_ | primera |
+| `1.0.0` | `868f2fa8eae85359d74a3fe52856c0753d884d90` | primera |
+
+La línea completa, lista para pegar:
+
+```ts
+import { verificarServicio, ServicioIndeterminado }
+  from "https://raw.githubusercontent.com/V8Labs/v8-auth-service/868f2fa8eae85359d74a3fe52856c0753d884d90/servicio.ts";
+import { almacenSupabase }
+  from "https://raw.githubusercontent.com/V8Labs/v8-auth-service/868f2fa8eae85359d74a3fe52856c0753d884d90/almacen_supabase.ts";
+```
+
+Verificado importando ese SHA desde Deno, igual que lo hará una edge function.
