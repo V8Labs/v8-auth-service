@@ -66,8 +66,15 @@ export type VerificacionServicio =
    *  es buena, lo que falta es el permiso. Mandarlo a re-autenticarse no arregla
    *  nada — es la misma familia que el `sin_email` TERMINAL de `v8-auth-jwt`. */
   | { estado: "sin_alcance"; agente: string; exigido: string; tiene: string[] }
-  /** Vale y alcanza. `agente` es el autor que hay que estampar. */
-  | { estado: "verificado"; agente: string; tokenId: string; scopes: string[] };
+  /** Vale y alcanza.
+   *
+   *  ⚠ **`agente` está VERIFICADO; `corrida` está DECLARADA.** No son lo mismo y
+   *  no se pueden tratar igual:
+   *   · `agente` sale de la fila del token — el llamador no lo elige.
+   *   · `corrida` sale de un header del llamador — es procedencia, NO una
+   *     afirmación de identidad. Sirve para poder DESHACER un lote, no para
+   *     autorizar nada. Nunca ramifiques permisos por `corrida`. */
+  | { estado: "verificado"; agente: string; tokenId: string; scopes: string[]; corrida?: string };
 
 /**
  * No se pudo verificar. **NO significa que el token sea malo**: significa que el
@@ -106,7 +113,25 @@ export type FilaToken = {
  * ya se comió tres veces esta semana.
  */
 export type Almacen = {
-  buscar: (id: string) => Promise<FilaToken | null>;
+  /**
+   * ⭐ PREFERIDA: delega la verificación al servidor, así **el hash nunca sale de
+   * la base**. Es mejor que `buscar` y no es un detalle de gusto — con `buscar`,
+   * el hash de cada credencial viaja por la red hasta la edge function en cada
+   * llamada. Lo propuso `mirror` al aplicar la migración y tenía razón.
+   *
+   * Devuelve el agente si el token vale Y alcanza; `null` si no.
+   * **TIRA** si no pudo consultar → indeterminado.
+   *
+   * ⚠ Costo conocido: con un solo `null` para «no existe», «secreto malo» y «sin
+   * scope», el estado `sin_alcance` (403 terminal) **colapsa en `rechazado`
+   * (401)**. Es deliberado del lado de `mirror` —distinguir sería un oráculo para
+   * quien prueba tokens— y está pedida la variante que solo pueda llamar
+   * `service_role` para recuperar la distinción sin exponerla hacia afuera.
+   */
+  verificarEnServidor?: (id: string, secreto: string, scope: string) => Promise<{ agente: string; scopes?: string[] } | null>;
+  /** Alternativa: traer la fila y comparar acá. Se conserva para almacenes que no
+   *  puedan ofrecer la verificación server-side. */
+  buscar?: (id: string) => Promise<FilaToken | null>;
   /** Best-effort, para `ultimo_uso`. Si falla, NO puede romper la verificación. */
   marcarUso?: (id: string) => Promise<void>;
 };
@@ -125,8 +150,18 @@ function partir(token: string): { id: string; secreto: string } | null {
   if (!id || !secreto) return null;
   // El id viaja a una consulta: se acota su alfabeto acá y no se confía en que el
   // adaptador parametrice bien. Defensa en profundidad, no reemplazo del bind.
-  if (!/^[A-Za-z0-9]{4,32}$/.test(id)) return null;
+  // ⚠ Admite guiones porque `mirror` hizo el `id` un **uuid** al aplicar la tabla,
+  // y mi versión original (alfanumérico puro) habría rechazado TODO token real.
+  if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) return null;
   return { id, secreto };
+}
+
+/** Charset acotado para la corrida: se estampa en una base, así que no se acepta
+ *  cualquier cosa que mande el llamador. No es autorización — es higiene. */
+function corridaDe(req: Request): string | undefined {
+  const v = (req.headers.get("X-V8-Run-Id") ?? "").trim();
+  if (!v || v.length > 64 || !/^[A-Za-z0-9_.:-]+$/.test(v)) return undefined;
+  return v;
 }
 
 /** SHA-256 en hex. Web Crypto: disponible en Deno sin dependencias. */
@@ -160,9 +195,37 @@ export async function verificarToken(
   token: string,
   exigido: string,
   almacen: Almacen,
+  corrida?: string,
 ): Promise<VerificacionServicio> {
   const partes = partir((token ?? "").trim());
   if (!partes) return { estado: "sin_credencial" };
+
+  // ⭐ Camino preferido: la base verifica y el hash nunca sale de ahí.
+  if (almacen.verificarEnServidor) {
+    let r: { agente: string; scopes?: string[] } | null;
+    try {
+      r = await almacen.verificarEnServidor(partes.id, partes.secreto, exigido);
+    } catch (e) {
+      throw new ServicioIndeterminado(e instanceof Error ? e.message : String(e));
+    }
+    // Un solo `null` para los tres «no». Ver la nota en `Almacen`: hoy
+    // `sin_alcance` no se puede distinguir por este camino y colapsa en 401.
+    if (!r) return { estado: "rechazado", motivo: "desconocido" };
+    if (almacen.marcarUso) {
+      try { await almacen.marcarUso(partes.id); } catch { /* no rompe nada */ }
+    }
+    return {
+      estado: "verificado",
+      agente: r.agente,
+      tokenId: partes.id,
+      scopes: r.scopes ?? [exigido],
+      ...(corrida ? { corrida } : {}),
+    };
+  }
+
+  if (!almacen.buscar) {
+    throw new ServicioIndeterminado("el almacén no ofrece ni verificarEnServidor ni buscar");
+  }
 
   let fila: FilaToken | null;
   try {
@@ -198,7 +261,13 @@ export async function verificarToken(
     try { await almacen.marcarUso(fila.id); } catch { /* no rompe nada */ }
   }
 
-  return { estado: "verificado", agente: fila.agente, tokenId: fila.id, scopes };
+  return {
+    estado: "verificado",
+    agente: fila.agente,
+    tokenId: fila.id,
+    scopes,
+    ...(corrida ? { corrida } : {}),
+  };
 }
 
 /**
@@ -215,8 +284,9 @@ export async function verificarServicio(
   exigido: string,
   almacen: Almacen,
 ): Promise<VerificacionServicio> {
+  const corrida = corridaDe(req);
   const propio = req.headers.get("X-V8-Service-Token");
-  if (propio) return verificarToken(propio, exigido, almacen);
+  if (propio) return verificarToken(propio, exigido, almacen, corrida);
 
   const auth = req.headers.get("Authorization") ?? req.headers.get("authorization");
   if (!auth) return { estado: "sin_credencial" };
@@ -224,7 +294,7 @@ export async function verificarServicio(
   if (!m) return { estado: "sin_credencial" };
   const crudo = m[1].trim();
   if (!crudo.startsWith(PREFIJO)) return { estado: "sin_credencial" };
-  return verificarToken(crudo, exigido, almacen);
+  return verificarToken(crudo, exigido, almacen, corrida);
 }
 
 /**

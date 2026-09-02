@@ -186,3 +186,78 @@ Deno.test("un almacén SIN marcarUso funciona igual (es opcional)", async () => 
   const r = await verificarToken("v8svc_abc123XYZ_s3cr3to", SCOPE, { buscar: base.buscar });
   assertEquals(r.estado, "verificado");
 });
+
+// ── El camino de `mirror`: la base verifica, el hash nunca sale ──────────────
+
+const UUID = "3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607";
+
+Deno.test("⭐ id UUID: mi regex original lo habría rechazado y ningún token real habría entrado", async () => {
+  // `mirror` hizo el id un uuid al aplicar la tabla. La versión original de
+  // `partir` exigía alfanumérico puro — habría dado sin_credencial SIEMPRE.
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve({ agente: "whatsapp" }) };
+  const r = await verificarToken(`v8svc_${UUID}_s3cr3to`, SCOPE, alm);
+  assertEquals(r.estado, "verificado");
+  if (r.estado === "verificado") assertEquals(r.tokenId, UUID);
+});
+
+Deno.test("verificarEnServidor null → rechazado (sin_alcance colapsa acá, y está documentado)", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve(null) };
+  assertEquals((await verificarToken(`v8svc_${UUID}_x`, SCOPE, alm)).estado, "rechazado");
+});
+
+Deno.test("⭐ si el RPC TIRA → indeterminado, nunca rechazado", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.reject(new Error("connection timeout")) };
+  await assertRejects(() => verificarToken(`v8svc_${UUID}_x`, SCOPE, alm), ServicioIndeterminado);
+});
+
+Deno.test("verificarEnServidor gana sobre buscar cuando están los dos", async () => {
+  let usoBuscar = false;
+  const alm: Almacen = {
+    verificarEnServidor: () => Promise.resolve({ agente: "porRpc" }),
+    buscar: () => { usoBuscar = true; return Promise.resolve(null); },
+  };
+  const r = await verificarToken(`v8svc_${UUID}_x`, SCOPE, alm);
+  assertEquals(r.estado === "verificado" && r.agente, "porRpc");
+  assertEquals(usoBuscar, false, "el hash no debe salir de la base si hay RPC");
+});
+
+Deno.test("un almacén sin ningún camino → indeterminado, no un falso rechazo", async () => {
+  await assertRejects(() => verificarToken(`v8svc_${UUID}_x`, SCOPE, {}), ServicioIndeterminado);
+});
+
+// ── La corrida: procedencia DECLARADA, no identidad verificada ───────────────
+
+Deno.test("⭐ la corrida viaja del header al resultado (para poder deshacer un lote)", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve({ agente: "whatsapp" }) };
+  const req = new Request("https://x.co", {
+    headers: { Authorization: `Bearer v8svc_${UUID}_s`, "X-V8-Run-Id": "carga-2026-09-02-a" },
+  });
+  const r = await verificarServicio(req, SCOPE, alm);
+  assertEquals(r.estado === "verificado" && r.corrida, "carga-2026-09-02-a");
+});
+
+Deno.test("sin header de corrida, no se inventa ninguna", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve({ agente: "whatsapp" }) };
+  const req = new Request("https://x.co", { headers: { Authorization: `Bearer v8svc_${UUID}_s` } });
+  const r = await verificarServicio(req, SCOPE, alm);
+  assertEquals(r.estado === "verificado" && r.corrida, undefined);
+});
+
+Deno.test("una corrida basura se descarta — se va a estampar en una base", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve({ agente: "whatsapp" }) };
+  for (const mala of ["con espacios", "'; drop--", "x".repeat(65), "acentós"]) {
+    const req = new Request("https://x.co", {
+      headers: { Authorization: `Bearer v8svc_${UUID}_s`, "X-V8-Run-Id": mala },
+    });
+    const r = await verificarServicio(req, SCOPE, alm);
+    assertEquals(r.estado === "verificado" && r.corrida, undefined, `debía descartarse: ${mala}`);
+  }
+});
+
+Deno.test("la corrida NO altera la autorización (es procedencia, no permiso)", async () => {
+  const alm: Almacen = { verificarEnServidor: () => Promise.resolve(null) };
+  const req = new Request("https://x.co", {
+    headers: { Authorization: `Bearer v8svc_${UUID}_s`, "X-V8-Run-Id": "la-que-sea" },
+  });
+  assertEquals((await verificarServicio(req, SCOPE, alm)).estado, "rechazado");
+});

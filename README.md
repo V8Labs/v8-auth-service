@@ -115,7 +115,7 @@ otro token es mandarlo a dar vueltas. Misma familia que el `sin_email` de `v8-au
 ## Banco de pruebas
 
 ```
-deno test servicio_test.ts      # 19 casos
+deno test servicio_test.ts      # 28 casos
 ```
 
 Los que importan no son «¿acepta un token bueno?»:
@@ -128,13 +128,29 @@ Los que importan no son «¿acepta un token bueno?»:
   `v8-auth-jwt`, y tratarla como rechazo le diría a un operador legítimo «credencial de
   servicio inválida», que no le dice nada
 
-## La tabla
+## La tabla — aplicada por `mirror` (2026-09-02)
 
-Propuesta en [`docs/migracion-propuesta.sql`](docs/migracion-propuesta.sql). **La dueña del
-esquema es `mirror`** — si algo ahí está mal, la versión correcta es la suya.
+    v8_auth.service_tokens
+    v8_auth.verificar_token(p_id uuid, p_secreto text, p_scope text) → text | null
 
-Lo único que pido no negociar: **la lee `service_role` y nadie más**. Un padrón de tokens
-legible por una sesión cualquiera no vale nada.
+**NO está en el schema `auth`**: ese es de GoTrue y ni siquiera se puede escribir ahí
+(`42501 permission denied`, medido). Y `v8_auth` **no está expuesto por PostgREST** — que
+para una tabla de hashes de credenciales es mejor, no peor.
+
+`mirror` mejoró el diseño en un punto que yo tenía peor: **la verificación ocurre en la
+base, así el hash nunca sale de ahí.** Mi versión traía la fila y comparaba en la edge
+function, o sea que el hash de cada credencial viajaba por la red en cada llamada.
+
+⚠ **Requisito pendiente:** como `v8_auth` no está expuesto, `supabase.rpc()` no puede llamar
+a `v8_auth.verificar_token` directamente. Hace falta un envoltorio
+`public.verificar_service_token` (`security definer`, revocado de `anon`/`authenticated`).
+Es el default de `rpcVerificar`. Pedido a `mirror`.
+
+⚠ **Costo conocido y documentado:** la función devuelve el agente o `NULL`, con un solo
+`NULL` para «no existe», «secreto malo» y «sin scope». Es deliberado —distinguirlos sería un
+oráculo para quien prueba tokens— pero hace que **`sin_alcance` (403 terminal) colapse en
+`rechazado` (401)** por ese camino. Pedida a `mirror` una variante llamable solo por
+`service_role` que recupere la distinción sin exponerla hacia afuera.
 
 ## Import por SHA, nunca por tag
 
@@ -145,6 +161,7 @@ no paga la superficie. Misma regla que `v8-auth-jwt`.
 | versión | SHA | notas |
 |---|---|---|
 | `1.0.0` | `868f2fa8eae85359d74a3fe52856c0753d884d90` | primera |
+| `1.1.0` | _(este commit)_ | esquema real de `mirror` (uuid, `secreto_hash`, RPC) + `corrida` |
 
 La línea completa, lista para pegar:
 
