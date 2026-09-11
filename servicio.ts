@@ -148,11 +148,26 @@ function partir(token: string): { id: string; secreto: string } | null {
   const id = resto.slice(0, corte);
   const secreto = resto.slice(corte + 1);
   if (!id || !secreto) return null;
-  // El id viaja a una consulta: se acota su alfabeto acá y no se confía en que el
+  // El id viaja a una consulta: se acota su forma acá y no se confía en que el
   // adaptador parametrice bien. Defensa en profundidad, no reemplazo del bind.
-  // ⚠ Admite guiones porque `mirror` hizo el `id` un **uuid** al aplicar la tabla,
-  // y mi versión original (alfanumérico puro) habría rechazado TODO token real.
-  if (!/^[A-Za-z0-9-]{4,64}$/.test(id)) return null;
+  //
+  // ⭐ SE EXIGE UUID, NO «alfanumérico con guiones» (arreglo 2026-09-11).
+  //
+  // La versión anterior aceptaba cualquier `[A-Za-z0-9-]{4,64}`, y eso NO era
+  // laxitud inofensiva: la columna `id` es `uuid`, así que un id que pasaba este
+  // filtro y no era UUID hacía **reventar la consulta** (`invalid input syntax
+  // for type uuid`). Ese error subía como fallo del almacén → `ServicioIndeterminado`
+  // → el consumidor devolvía **503 «no pude verificar tu token»**.
+  //
+  // ⇒ Un token BASURA contestaba «no pude verificar» en vez de «rechazado». Es el
+  // mismo colapso que este módulo existe para evitar, en el módulo que lo evita:
+  // culpaba a la infraestructura por un problema de la credencial, y encima con
+  // `reintentable:true`, invitando a reintentar algo que no podía funcionar nunca.
+  // Lo encontró `mind` (2026-09-11) probando con un token inválido a propósito, y
+  // lo pasó como observación sobre el TEXTO del mensaje; el texto era el síntoma.
+  if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) {
+    return null;
+  }
   return { id, secreto };
 }
 
@@ -197,8 +212,24 @@ export async function verificarToken(
   almacen: Almacen,
   corrida?: string,
 ): Promise<VerificacionServicio> {
-  const partes = partir((token ?? "").trim());
-  if (!partes) return { estado: "sin_credencial" };
+  const crudo = (token ?? "").trim();
+  const partes = partir(crudo);
+  if (!partes) {
+    // ⚠ DOS AUSENCIAS DISTINTAS, Y ANTES SE CONTESTABAN IGUAL (2026-09-11).
+    //
+    //   · no hay token, o no empieza con `v8svc_`  → `sin_credencial`: no me
+    //     presentaste una credencial de servicio. El consumidor puede seguir con
+    //     otro camino de auth (sesión de operador, por ejemplo).
+    //   · empieza con `v8svc_` pero está malformado → `rechazado`: SÍ me
+    //     presentaste una, y no vale.
+    //
+    // Decir «no trajiste credencial» a quien trajo una mala manda a mirar el
+    // lugar equivocado: el que la mandó va a revisar por qué no se está enviando
+    // el header, cuando el header estaba y el token era el problema.
+    return crudo.startsWith(PREFIJO)
+      ? { estado: "rechazado", motivo: "desconocido" }
+      : { estado: "sin_credencial" };
+  }
 
   // ⭐ Camino preferido: la base verifica y el hash nunca sale de ahí.
   if (almacen.verificarEnServidor) {
